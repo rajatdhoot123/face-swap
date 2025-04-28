@@ -134,18 +134,29 @@ async def swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_k
         base_path = download_image(str(request.base_image_url))
         swap_paths = [download_image(str(url)) for url in request.swap_faces_urls]
         
-        results = []
-        all_results = face_swapper.process_multiple_faces(base_path, swap_paths, request.target_face_index)
+        # Generate a session UUID for this request
+        session_uuid = str(uuid.uuid4())
         
+        # Process all faces and upload directly to R2
+        all_results = face_swapper.process_multiple_faces(
+            base_path, 
+            swap_paths, 
+            request.target_face_index,
+            session_uuid
+        )
+        
+        # Get uploaded URLs from the face swapper
+        result_urls = face_swapper.get_last_upload_urls()
+        
+        results = []
         for idx, (result_img, success) in enumerate(all_results):
             if success:
-                result_filename = f"result_{uuid.uuid4()}.jpg"
-                result_path = str(UPLOAD_DIR / result_filename)
-                cv2.imwrite(result_path, result_img)
-                logger.info(f"Face swap successful, saved result as: {result_filename}")
+                # Use the corresponding R2 URL if available
+                result_url = result_urls[idx] if idx < len(result_urls) else ""
+                logger.info(f"Face swap successful, uploaded to R2: {result_url}")
                 results.append({
                     "success": True,
-                    "result_filename": result_filename,
+                    "result_url": result_url,
                     "is_all_faces": request.target_face_index is None
                 })
             else:
@@ -173,6 +184,9 @@ async def enhanced_swap_faces(request: SwapFacesRequest, api_key: str = Depends(
         base_path = download_image(str(request.base_image_url))
         swap_paths = [download_image(str(url)) for url in request.swap_faces_urls]
         
+        # Generate a session UUID for this request
+        session_uuid = str(uuid.uuid4())
+        
         # Perform enhanced face swap
         result_img, success = face_swapper.swap_with_enhanced_face(
             swap_paths,
@@ -181,16 +195,27 @@ async def enhanced_swap_faces(request: SwapFacesRequest, api_key: str = Depends(
         )
         
         if success:
-            result_filename = f"enhanced_result_{uuid.uuid4()}.jpg"
-            result_path = str(UPLOAD_DIR / result_filename)
-            cv2.imwrite(result_path, result_img)
-            logger.info(f"Enhanced face swap successful, saved result as: {result_filename}")
-            
-            return {
-                "success": True,
-                "result_filename": result_filename,
-                "is_all_faces": request.target_face_index is None
-            }
+            # Upload to R2 instead of local storage
+            if face_swapper.r2_enabled:
+                result_url = face_swapper.upload_image_to_r2(result_img, session_uuid, 0)
+                logger.info(f"Enhanced face swap successful, uploaded to R2: {result_url}")
+                return {
+                    "success": True,
+                    "result_url": result_url,
+                    "is_all_faces": request.target_face_index is None
+                }
+            else:
+                # Fallback to local storage if R2 is not configured
+                result_filename = f"enhanced_result_{uuid.uuid4()}.jpg"
+                result_path = str(UPLOAD_DIR / result_filename)
+                cv2.imwrite(result_path, result_img)
+                logger.info(f"Enhanced face swap successful, saved result as: {result_filename}")
+                
+                return {
+                    "success": True,
+                    "result_filename": result_filename,
+                    "is_all_faces": request.target_face_index is None
+                }
         else:
             logger.error("Enhanced face swap failed")
             raise HTTPException(status_code=400, detail="Face swap failed")

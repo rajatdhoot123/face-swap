@@ -247,7 +247,7 @@
                         }
                         
                         const img = document.createElement('img');
-                        img.src = `/result/${item.result_filename}`;
+                        img.src = item.result_url;
                         img.className = 'image-preview w-full';
                         
                         resultContainer.appendChild(img);

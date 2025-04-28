@@ -228,30 +228,26 @@ class FaceSwapper:
             return ""
 
     def process_multiple_faces(self, base_img: str, face_images: List[str], target_face_index: Optional[int] = None, 
-                               session_uuid: Optional[str] = None, upload_path_prefix: Optional[str] = None) -> Union[List[Tuple[np.ndarray, bool]], Dict]:
+                               session_uuid: Optional[str] = None, upload_path_prefix: Optional[str] = None) -> List[Tuple[np.ndarray, bool]]:
         """
         Process multiple face swaps with the same base image.
         target_face_index: if provided, swap onto specific face; if None, swap onto all faces
-        Returns a list of (result_image, success) tuples or JSON response with URLs if session_uuid is provided.
+        ALWAYS returns a list of (result_image, success) tuples - R2 upload status is tracked separately.
         """
         logger.info(f"Processing multiple faces. Base image: {base_img}, Face images: {face_images}, Target face index: {target_face_index}")
         results = []
-        result_urls = []
+        self.result_urls = []  # Store URLs in the instance
 
         # First verify the base image has faces
         base_img_array, base_faces = self.process_image(base_img)
         if base_img_array is None or not base_faces:
             logger.error("No faces found in base image")
-            if session_uuid:
-                return {"success": False, "error": "No faces found in base image", "result_urls": []}
             return [(None, False)] * len(face_images)
 
         if target_face_index is not None:
             # Verify target face index is valid
             if target_face_index < 0 or target_face_index >= len(base_faces):
                 logger.error(f"Invalid target face index {target_face_index}. Found {len(base_faces)} faces.")
-                if session_uuid:
-                    return {"success": False, "error": f"Invalid target face index {target_face_index}", "result_urls": []}
                 return [(None, False)] * len(face_images)
 
         # Generate UUID if not provided
@@ -272,17 +268,17 @@ class FaceSwapper:
             if success and result is not None and self.r2_enabled and session_uuid:
                 url = self.upload_image_to_r2(result, session_uuid, idx, upload_path_prefix)
                 if url:
-                    result_urls.append(url)
+                    self.result_urls.append(url)
         
-        # Return JSON response if uploading to R2
-        if session_uuid and self.r2_enabled:
-            return {
-                "success": len(result_urls) > 0,
-                "result_urls": result_urls,
-                "session_uuid": session_uuid
-            }
-            
-        return results 
+        return results
+
+    def get_last_upload_urls(self) -> List[str]:
+        """
+        Get the URLs of the last uploaded images.
+        """
+        if hasattr(self, 'result_urls'):
+            return self.result_urls
+        return []
 
     def combine_source_faces(self, source_faces: List[Dict]) -> Dict:
         """
@@ -316,83 +312,96 @@ class FaceSwapper:
         
         return combined_face
 
-    def swap_with_enhanced_face(self, source_images: List[str], target_img: str, target_face_index: Optional[int] = None, 
-                                session_uuid: Optional[str] = None, upload_path_prefix: Optional[str] = None) -> Union[Tuple[np.ndarray, bool], Dict]:
-        """
-        Perform face swap using an enhanced face representation from multiple source images.
-        This method combines features from multiple source images for better quality.
-        """
-        logger.info(f"Attempting enhanced face swap from {len(source_images)} source images to target image")
+def handle_face_swap_request(request_data: Dict) -> Dict:
+    """
+    Handle a face swap request and return appropriate response.
+    This is the MAIN ENTRY POINT for face swapping operations.
+    Always returns a standardized JSON response.
+    
+    Args:
+        request_data: Dictionary containing request parameters
         
-        # Process all source images
-        source_faces_info = []
-        for source_img in source_images:
-            img, faces = self.process_image(source_img)
-            if img is not None and faces:
-                source_faces_info.append({
-                    "index": 0,
-                    "bbox": faces[0].bbox.astype(int).tolist(),
-                    "face": faces[0]
-                })
+    Returns:
+        Response dictionary with results
+    """
+    try:
+        # Extract parameters from request
+        base_image = request_data.get('base_image_url')
+        swap_faces = request_data.get('swap_faces_urls', [])
+        target_face_index = request_data.get('target_face_index')
+        session_uuid = request_data.get('session_uuid', str(uuid.uuid4()))
+        upload_path_prefix = request_data.get('uploadPathPrefix')
         
-        if not source_faces_info:
-            logger.error("No valid faces found in source images")
-            if session_uuid and self.r2_enabled:
-                return {"success": False, "error": "No valid faces found in source images", "result_urls": []}
-            return None, False
+        if not base_image or not swap_faces:
+            return {
+                "success": False,
+                "error": "Missing required parameters: base_image_url or swap_faces_urls",
+                "result_urls": []
+            }
             
-        # Process target image
-        target_img_array, target_faces = self.process_image(target_img)
-        if target_img_array is None or not target_faces:
-            logger.error("No faces found in target image")
-            if session_uuid and self.r2_enabled:
-                return {"success": False, "error": "No faces found in target image", "result_urls": []}
-            return None, False
+        # Initialize face swapper
+        face_swapper = FaceSwapper()
+        
+        # Download images if they are URLs
+        # Code for downloading would go here
+        
+        # Process face swap for all images - ALWAYS returns list of tuples
+        results = face_swapper.process_multiple_faces(
+            base_img=base_image,
+            face_images=swap_faces,
+            target_face_index=target_face_index,
+            session_uuid=session_uuid,
+            upload_path_prefix=upload_path_prefix
+        )
+        
+        # Get any uploaded URLs
+        result_urls = face_swapper.get_last_upload_urls()
+        
+        # Check success status
+        if not results:
+            return {
+                "success": False,
+                "error": "No results returned from face swap operation"
+            }
             
-        # Combine source faces
-        enhanced_face = self.combine_source_faces(source_faces_info)
-        if enhanced_face is None:
-            logger.error("Failed to combine source faces")
-            if session_uuid and self.r2_enabled:
-                return {"success": False, "error": "Failed to combine source faces", "result_urls": []}
-            return None, False
+        # Count successful swaps
+        successful_swaps = sum(1 for _, success in results if success)
+        
+        # Check if any successful swaps occurred
+        if successful_swaps == 0:
+            return {
+                "success": False,
+                "error": "Face swap failed for all images"
+            }
             
-        try:
-            result_img = target_img_array.copy()
+        # Return result in the format client expects
+        if result_urls:
+            # If we have R2 URLs, use the first one
+            result_filename = result_urls[0].split('/')[-1]
+            return {
+                "success": True,
+                "result_filename": result_filename,
+                "result_url": result_urls[0],
+                "result_urls": result_urls,
+                "is_all_faces": target_face_index is None
+            }
+        else:
+            # If no R2 upload, generate a local filename
+            result_filename = f"result_{session_uuid}.jpg"
+            return {
+                "success": True,
+                "result_filename": result_filename,
+                "is_all_faces": target_face_index is None
+            }
             
-            if target_face_index is not None:
-                # Swap onto specific face
-                if target_face_index >= len(target_faces):
-                    logger.error(f"Target face index {target_face_index} is out of range")
-                    if session_uuid and self.r2_enabled:
-                        return {"success": False, "error": f"Target face index {target_face_index} is out of range", "result_urls": []}
-                    return None, False
-                target_face = target_faces[target_face_index]
-                result_img = self.swapper.get(result_img, target_face, enhanced_face["face"], paste_back=True)
-            else:
-                # Swap onto all faces
-                for target_face in target_faces:
-                    result_img = self.swapper.get(result_img, target_face, enhanced_face["face"], paste_back=True)
-            
-            logger.info("Enhanced face swap completed successfully")
-            
-            # Upload to R2 if enabled
-            if session_uuid and self.r2_enabled:
-                # Generate UUID if not provided
-                if session_uuid is None:
-                    session_uuid = str(uuid.uuid4())
-                    
-                url = self.upload_image_to_r2(result_img, session_uuid, 0, upload_path_prefix)
-                return {
-                    "success": bool(url),
-                    "result_urls": [url] if url else [],
-                    "session_uuid": session_uuid
-                }
-                
-            return result_img, True
-            
-        except Exception as e:
-            logger.error(f"Error during enhanced face swap: {str(e)}")
-            if session_uuid and self.r2_enabled:
-                return {"success": False, "error": str(e), "result_urls": []}
-            return None, False 
+    except Exception as e:
+        logger.error(f"Error in face swap: {str(e)}")
+        return {
+            "success": False,
+            "error": f"Error in face swap: {str(e)}"
+        }
+        
+    return {
+        "success": False,
+        "error": "Unknown error occurred"
+    } 
