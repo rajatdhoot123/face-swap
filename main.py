@@ -1,8 +1,8 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import List, Optional
 import uvicorn
 import cv2
@@ -15,6 +15,7 @@ import tempfile
 import uuid
 import logging
 import base64
+import requests
 from auth import get_api_key
 from dotenv import load_dotenv
 
@@ -27,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 # Define request models
 class SwapFacesRequest(BaseModel):
-    base_image: str
-    swap_faces: List[str]
+    base_image_url: HttpUrl
+    swap_faces_urls: List[HttpUrl]
     target_face_index: Optional[int] = None  # None means swap onto all faces
 
 class FaceInfo(BaseModel):
@@ -60,29 +61,42 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # Initialize FaceSwapper
 face_swapper = FaceSwapper()
 
+def download_image(url: str) -> str:
+    """Download image from URL and save it locally."""
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        # Create a unique filename
+        file_extension = url.split(".")[-1].lower()
+        if file_extension not in ['jpg', 'jpeg', 'png']:
+            file_extension = 'jpg'
+        unique_filename = f"image_{uuid.uuid4()}.{file_extension}"
+        file_path = UPLOAD_DIR / unique_filename
+        
+        # Save the file
+        with file_path.open("wb") as buffer:
+            shutil.copyfileobj(response.raw, buffer)
+        
+        logger.info(f"Image downloaded successfully: {file_path}")
+        return str(file_path)
+    except Exception as e:
+        logger.error(f"Error downloading image: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to download image: {str(e)}")
+
 @app.get("/")
 async def read_root():
     return FileResponse("static/index.html")
 
-@app.post("/upload-base-image/")
-async def upload_base_image(file: UploadFile = File(...), api_key: str = Depends(get_api_key)):
-    """Upload the base image and return detected faces."""
+@app.post("/detect-faces/")
+async def detect_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_key)):
+    """Detect faces in the base image."""
     try:
-        # Create a unique filename
-        file_extension = file.filename.split(".")[-1]
-        unique_filename = f"base_{uuid.uuid4()}.{file_extension}"
-        file_path = UPLOAD_DIR / unique_filename
+        # Download base image
+        base_path = download_image(str(request.base_image_url))
         
-        logger.info(f"Uploading base image: {file.filename} -> {unique_filename}")
-        
-        # Save the uploaded file
-        with file_path.open("wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        
-        logger.info(f"Base image saved successfully: {file_path}")
-
         # Detect faces in the image
-        img, faces_info = face_swapper.get_face_info(str(file_path))
+        img, faces_info = face_swapper.get_face_info(base_path)
         if img is None:
             raise HTTPException(status_code=400, detail="Failed to process image")
 
@@ -97,60 +111,28 @@ async def upload_base_image(file: UploadFile = File(...), api_key: str = Depends
         faces = [FaceInfo(index=face["index"], bbox=face["bbox"]) for face in faces_info]
         
         return {
-            "filename": unique_filename,
             "preview_image": f"data:image/jpeg;base64,{preview_base64}",
             "faces": faces,
             "status": "success"
         }
     except Exception as e:
-        logger.error(f"Error uploading base image: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/upload-swap-faces/")
-async def upload_swap_faces(files: List[UploadFile] = File(...), api_key: str = Depends(get_api_key)):
-    """Upload multiple faces to be swapped."""
-    try:
-        filenames = []
-        for file in files:
-            file_extension = file.filename.split(".")[-1]
-            unique_filename = f"swap_{uuid.uuid4()}.{file_extension}"
-            file_path = UPLOAD_DIR / unique_filename
-            
-            logger.info(f"Uploading swap face: {file.filename} -> {unique_filename}")
-            
-            with file_path.open("wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            
-            logger.info(f"Swap face saved successfully: {file_path}")
-            filenames.append(unique_filename)
-        
-        return {"filenames": filenames, "status": "success"}
-    except Exception as e:
-        logger.error(f"Error uploading swap faces: {str(e)}")
+        logger.error(f"Error detecting faces: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/swap-faces/")
 async def swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_key)):
     """
-    Perform face swapping with the provided images.
-    base_image: filename of the base image
-    swap_faces: list of filenames for faces to swap
+    Perform face swapping with the provided image URLs.
+    base_image_url: URL of the base image
+    swap_faces_urls: list of URLs for faces to swap
     target_face_index: index of the face to swap in base image (None means swap onto all faces)
     """
     try:
         logger.info(f"Received face swap request: {request}")
-        base_path = str(UPLOAD_DIR / request.base_image)
-        swap_paths = [str(UPLOAD_DIR / face) for face in request.swap_faces]
         
-        # Verify files exist
-        if not os.path.exists(base_path):
-            logger.error(f"Base image not found: {base_path}")
-            raise HTTPException(status_code=404, detail=f"Base image not found: {request.base_image}")
-        
-        for path in swap_paths:
-            if not os.path.exists(path):
-                logger.error(f"Swap face image not found: {path}")
-                raise HTTPException(status_code=404, detail=f"Swap face image not found: {path}")
+        # Download all images
+        base_path = download_image(str(request.base_image_url))
+        swap_paths = [download_image(str(url)) for url in request.swap_faces_urls]
         
         results = []
         all_results = face_swapper.process_multiple_faces(base_path, swap_paths, request.target_face_index)
@@ -164,15 +146,13 @@ async def swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_k
                 results.append({
                     "success": True,
                     "result_filename": result_filename,
-                    "original_face": request.swap_faces[idx],
                     "is_all_faces": request.target_face_index is None
                 })
             else:
-                logger.error(f"Face swap failed for: {request.swap_faces[idx]}")
+                logger.error(f"Face swap failed for face {idx}")
                 results.append({
                     "success": False,
-                    "error": "Face swap failed",
-                    "original_face": request.swap_faces[idx]
+                    "error": "Face swap failed"
                 })
         
         return {"results": results}
