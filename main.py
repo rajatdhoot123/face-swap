@@ -1,4 +1,4 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Depends
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +15,11 @@ import tempfile
 import uuid
 import logging
 import base64
+from auth import get_api_key
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -60,7 +65,7 @@ async def read_root():
     return FileResponse("static/index.html")
 
 @app.post("/upload-base-image/")
-async def upload_base_image(file: UploadFile = File(...)):
+async def upload_base_image(file: UploadFile = File(...), api_key: str = Depends(get_api_key)):
     """Upload the base image and return detected faces."""
     try:
         # Create a unique filename
@@ -102,7 +107,7 @@ async def upload_base_image(file: UploadFile = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/upload-swap-faces/")
-async def upload_swap_faces(files: List[UploadFile] = File(...)):
+async def upload_swap_faces(files: List[UploadFile] = File(...), api_key: str = Depends(get_api_key)):
     """Upload multiple faces to be swapped."""
     try:
         filenames = []
@@ -125,7 +130,7 @@ async def upload_swap_faces(files: List[UploadFile] = File(...)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.post("/swap-faces/")
-async def swap_faces(request: SwapFacesRequest):
+async def swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_key)):
     """
     Perform face swapping with the provided images.
     base_image: filename of the base image
@@ -176,7 +181,7 @@ async def swap_faces(request: SwapFacesRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/result/{filename}")
-async def get_result(filename: str):
+async def get_result(filename: str, api_key: str = Depends(get_api_key)):
     """Get a processed image by filename."""
     file_path = UPLOAD_DIR / filename
     if not file_path.exists():
