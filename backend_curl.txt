@@ -1,0 +1,68 @@
+Face Swap API Curl Commands
+1. Detect Faces in Base Image
+
+curl -X POST "http://localhost:8000/detect-faces/" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_image_url": "https://example.com/base-image.jpg",
+    "swap_faces_urls": [],
+    "target_face_index": null
+  }'
+
+
+Returns a base64 encoded preview image with numbered faces and face detection information.
+2. Standard Face Swap (Single or Multiple Faces)
+
+curl -X POST "http://localhost:8000/swap-faces/" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_image_url": "https://example.com/base-image.jpg",
+    "swap_faces_urls": [
+      "https://example.com/face1.jpg",
+      "https://example.com/face2.jpg"
+    ],
+    "target_face_index": null
+  }'
+
+Swaps faces in the base image with the provided face images. If target_face_index is null, swaps all faces.
+3. Enhanced Face Swap (Multiple Source Images for Better Quality)
+
+curl -X POST "http://localhost:8000/enhanced-swap-faces/" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "base_image_url": "https://example.com/base-image.jpg",
+    "swap_faces_urls": [
+      "https://example.com/face1.jpg",
+      "https://example.com/face2.jpg",
+      "https://example.com/face3.jpg"
+    ],
+    "target_face_index": 0
+  }'
+
+Performs an enhanced face swap by combining features from multiple source images for better quality.
+The system will average facial features from all source images to create a more robust face representation.
+4. Get Result Image
+
+curl -X GET "http://localhost:8000/result/RESULT_FILENAME" \
+  -H "X-API-Key: YOUR_API_KEY" \
+  --output result.jpg
+
+Downloads the processed image. Replace RESULT_FILENAME with the filename from the swap response.
+Notes
+Replace YOUR_API_KEY with your actual API key
+Replace example URLs with actual image URLs
+Face indices are 0-based (first face is index 0)
+Set target_face_index to null to swap all faces
+Supported formats: jpg, jpeg, png
+All URLs must be valid HTTP/HTTPS URLs
+For enhanced face swap, provide multiple source images of the same person for best results
+The enhanced face swap combines features from all source images to improve quality
+Example Workflow
+1. Use detect-faces endpoint to see available faces in the base image
+2. Choose between standard swap or enhanced swap based on your needs:
+   - Standard swap: Good for quick swaps with single source images
+   - Enhanced swap: Better quality when you have multiple source images of the same person
+3. Download result using result endpoint

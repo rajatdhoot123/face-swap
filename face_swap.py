@@ -184,3 +184,91 @@ class FaceSwapper:
                 results.append((result, success))
         
         return results 
+
+    def combine_source_faces(self, source_faces: List[Dict]) -> Dict:
+        """
+        Combine multiple source faces to create an enhanced face representation.
+        This method averages the facial features from multiple source images.
+        """
+        if not source_faces:
+            return None
+            
+        # Initialize combined face data
+        combined_face = source_faces[0].copy()
+        
+        # If only one face, return it directly
+        if len(source_faces) == 1:
+            return combined_face
+            
+        # Average the facial landmarks and features
+        for face in source_faces[1:]:
+            # Average the bounding box
+            combined_face["bbox"] = [
+                (a + b) / 2 for a, b in zip(combined_face["bbox"], face["bbox"])
+            ]
+            
+            # Average the facial landmarks if available
+            if hasattr(face["face"], "kps") and hasattr(combined_face["face"], "kps"):
+                combined_face["face"].kps = (combined_face["face"].kps + face["face"].kps) / 2
+                
+            # Average the face embedding if available
+            if hasattr(face["face"], "embedding") and hasattr(combined_face["face"], "embedding"):
+                combined_face["face"].embedding = (combined_face["face"].embedding + face["face"].embedding) / 2
+        
+        return combined_face
+
+    def swap_with_enhanced_face(self, source_images: List[str], target_img: str, target_face_index: Optional[int] = None) -> Tuple[np.ndarray, bool]:
+        """
+        Perform face swap using an enhanced face representation from multiple source images.
+        This method combines features from multiple source images for better quality.
+        """
+        logger.info(f"Attempting enhanced face swap from {len(source_images)} source images to target image")
+        
+        # Process all source images
+        source_faces_info = []
+        for source_img in source_images:
+            img, faces = self.process_image(source_img)
+            if img is not None and faces:
+                source_faces_info.append({
+                    "index": 0,
+                    "bbox": faces[0].bbox.astype(int).tolist(),
+                    "face": faces[0]
+                })
+        
+        if not source_faces_info:
+            logger.error("No valid faces found in source images")
+            return None, False
+            
+        # Process target image
+        target_img_array, target_faces = self.process_image(target_img)
+        if target_img_array is None or not target_faces:
+            logger.error("No faces found in target image")
+            return None, False
+            
+        # Combine source faces
+        enhanced_face = self.combine_source_faces(source_faces_info)
+        if enhanced_face is None:
+            logger.error("Failed to combine source faces")
+            return None, False
+            
+        try:
+            result_img = target_img_array.copy()
+            
+            if target_face_index is not None:
+                # Swap onto specific face
+                if target_face_index >= len(target_faces):
+                    logger.error(f"Target face index {target_face_index} is out of range")
+                    return None, False
+                target_face = target_faces[target_face_index]
+                result_img = self.swapper.get(result_img, target_face, enhanced_face["face"], paste_back=True)
+            else:
+                # Swap onto all faces
+                for target_face in target_faces:
+                    result_img = self.swapper.get(result_img, target_face, enhanced_face["face"], paste_back=True)
+            
+            logger.info("Enhanced face swap completed successfully")
+            return result_img, True
+            
+        except Exception as e:
+            logger.error(f"Error during enhanced face swap: {str(e)}")
+            return None, False 

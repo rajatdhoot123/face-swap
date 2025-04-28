@@ -160,6 +160,45 @@ async def swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_k
         logger.error(f"Error in face swap: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.post("/enhanced-swap-faces/")
+async def enhanced_swap_faces(request: SwapFacesRequest, api_key: str = Depends(get_api_key)):
+    """
+    Perform enhanced face swapping using multiple source images to improve quality.
+    This endpoint combines features from multiple source images for better results.
+    """
+    try:
+        logger.info(f"Received enhanced face swap request: {request}")
+        
+        # Download all images
+        base_path = download_image(str(request.base_image_url))
+        swap_paths = [download_image(str(url)) for url in request.swap_faces_urls]
+        
+        # Perform enhanced face swap
+        result_img, success = face_swapper.swap_with_enhanced_face(
+            swap_paths,
+            base_path,
+            request.target_face_index
+        )
+        
+        if success:
+            result_filename = f"enhanced_result_{uuid.uuid4()}.jpg"
+            result_path = str(UPLOAD_DIR / result_filename)
+            cv2.imwrite(result_path, result_img)
+            logger.info(f"Enhanced face swap successful, saved result as: {result_filename}")
+            
+            return {
+                "success": True,
+                "result_filename": result_filename,
+                "is_all_faces": request.target_face_index is None
+            }
+        else:
+            logger.error("Enhanced face swap failed")
+            raise HTTPException(status_code=400, detail="Face swap failed")
+            
+    except Exception as e:
+        logger.error(f"Error in enhanced face swap: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.get("/result/{filename}")
 async def get_result(filename: str, api_key: str = Depends(get_api_key)):
     """Get a processed image by filename."""
