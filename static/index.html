@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Face Swap App</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <style>
+        .image-preview {
+            max-width: 300px;
+            max-height: 300px;
+            object-fit: contain;
+        }
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-8">
+    <div class="max-w-4xl mx-auto bg-white rounded-lg shadow-lg p-8">
+        <h1 class="text-3xl font-bold mb-8 text-center text-gray-800">Face Swap App</h1>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Base Image Section -->
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4">
+                <h2 class="text-xl font-semibold mb-4">Base Image</h2>
+                <input type="file" id="baseImage" accept="image/*" class="mb-4">
+                <div class="flex justify-center flex-col items-center">
+                    <img id="baseImagePreview" class="image-preview hidden mb-4" alt="Base image preview">
+                    <div id="faceSelector" class="w-full hidden">
+                        <div class="mb-4">
+                            <label class="inline-flex items-center">
+                                <input type="checkbox" id="swapAllFaces" class="form-checkbox h-5 w-5 text-blue-600">
+                                <span class="ml-2 text-gray-700">Swap onto all faces</span>
+                            </label>
+                        </div>
+                        <div id="singleFaceSelector">
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Select Face to Replace:</label>
+                            <select id="targetFaceIndex" class="w-full p-2 border rounded-lg">
+                                <!-- Face options will be added here -->
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Swap Faces Section -->
+            <div class="border-2 border-dashed border-gray-300 rounded-lg p-4">
+                <h2 class="text-xl font-semibold mb-4">Face Images to Swap</h2>
+                <input type="file" id="swapFaces" accept="image/*" multiple class="mb-4">
+                <div id="swapFacesPreview" class="grid grid-cols-2 gap-4">
+                    <!-- Preview images will be added here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div class="mt-8">
+            <button id="swapButton" class="w-full bg-blue-500 text-white py-2 px-4 rounded-lg hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed">
+                Swap Faces
+            </button>
+            <div id="results" class="mt-8 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Results will be added here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+    </div>
+
+    <script>
+        let baseImageFile = null;
+        let swapFaceFiles = [];
+        let uploadedBaseImage = null;
+        let uploadedSwapFaces = [];
+        let selectedFaceIndex = 0;
+        let swapAllFaces = false;
+
+        // Show loading overlay
+        function showLoading() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+
+        // Hide loading overlay
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+
+        // Handle base image selection
+        document.getElementById('baseImage').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                baseImageFile = file;
+                
+                // Upload base image
+                const formData = new FormData();
+                formData.append('file', file);
+                
+                try {
+                    showLoading();
+                    const response = await fetch('/upload-base-image/', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    const result = await response.json();
+                    uploadedBaseImage = result.filename;
+
+                    // Show preview with detected faces
+                    const preview = document.getElementById('baseImagePreview');
+                    preview.src = result.preview_image;
+                    preview.classList.remove('hidden');
+
+                    // Update face selector
+                    const faceSelector = document.getElementById('faceSelector');
+                    const targetFaceSelect = document.getElementById('targetFaceIndex');
+                    targetFaceSelect.innerHTML = '';
+                    
+                    if (result.faces && result.faces.length > 0) {
+                        result.faces.forEach((face, idx) => {
+                            const option = document.createElement('option');
+                            option.value = idx;
+                            option.textContent = `Face ${idx + 1}`;
+                            targetFaceSelect.appendChild(option);
+                        });
+                        faceSelector.classList.remove('hidden');
+                        // Set initial selected face index
+                        selectedFaceIndex = 0;
+                    }
+                } catch (error) {
+                    console.error('Error uploading base image:', error);
+                    alert('Failed to upload base image');
+                } finally {
+                    hideLoading();
+                }
+            }
+        });
+
+        // Handle target face selection
+        document.getElementById('targetFaceIndex').addEventListener('change', (e) => {
+            selectedFaceIndex = parseInt(e.target.value);
+        });
+
+        // Handle swap faces selection
+        document.getElementById('swapFaces').addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            swapFaceFiles = files;
+            const preview = document.getElementById('swapFacesPreview');
+            preview.innerHTML = '';
+            uploadedSwapFaces = [];
+
+            // Upload each swap face
+            const formData = new FormData();
+            files.forEach(file => {
+                formData.append('files', file);
+            });
+
+            try {
+                showLoading();
+                const response = await fetch('/upload-swap-faces/', {
+                    method: 'POST',
+                    body: formData
+                });
+                const result = await response.json();
+                uploadedSwapFaces = result.filenames;
+
+                // Show previews
+                files.forEach(file => {
+                    const img = document.createElement('img');
+                    img.src = URL.createObjectURL(file);
+                    img.className = 'image-preview w-full';
+                    preview.appendChild(img);
+                });
+            } catch (error) {
+                console.error('Error uploading swap faces:', error);
+                alert('Failed to upload swap faces');
+            } finally {
+                hideLoading();
+            }
+        });
+
+        // Handle swap all faces checkbox
+        document.getElementById('swapAllFaces').addEventListener('change', (e) => {
+            swapAllFaces = e.target.checked;
+            const singleFaceSelector = document.getElementById('singleFaceSelector');
+            singleFaceSelector.style.display = swapAllFaces ? 'none' : 'block';
+        });
+
+        // Handle swap button click
+        document.getElementById('swapButton').addEventListener('click', async () => {
+            if (!uploadedBaseImage || uploadedSwapFaces.length === 0) {
+                alert('Please select both base image and faces to swap');
+                return;
+            }
+
+            try {
+                showLoading();
+                const response = await fetch('/swap-faces/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        base_image: uploadedBaseImage,
+                        swap_faces: uploadedSwapFaces,
+                        target_face_index: swapAllFaces ? null : selectedFaceIndex
+                    })
+                });
+                const result = await response.json();
+                
+                // Display results
+                const resultsDiv = document.getElementById('results');
+                resultsDiv.innerHTML = '';
+                
+                for (const item of result.results) {
+                    if (item.success) {
+                        const resultContainer = document.createElement('div');
+                        resultContainer.className = 'border rounded-lg p-4';
+                        
+                        if (item.is_all_faces) {
+                            const title = document.createElement('h3');
+                            title.className = 'text-lg font-semibold mb-3';
+                            title.textContent = 'All Faces Swapped';
+                            resultContainer.appendChild(title);
+                        }
+                        
+                        const img = document.createElement('img');
+                        img.src = `/result/${item.result_filename}`;
+                        img.className = 'image-preview w-full';
+                        
+                        resultContainer.appendChild(img);
+                        resultsDiv.appendChild(resultContainer);
+                    } else {
+                        const errorDiv = document.createElement('div');
+                        errorDiv.className = 'border rounded-lg p-4 bg-red-100 text-red-700';
+                        errorDiv.textContent = `Face swap failed for ${item.original_face}`;
+                        resultsDiv.appendChild(errorDiv);
+                    }
+                }
+            } catch (error) {
+                console.error('Error performing face swap:', error);
+                alert('Failed to perform face swap');
+            } finally {
+                hideLoading();
+            }
+        });
+    </script>
+</body>
+</html> 
