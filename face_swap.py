@@ -280,6 +280,65 @@ class FaceSwapper:
             return self.result_urls
         return []
 
+    def swap_with_enhanced_face_in_memory(self, source_images: List[np.ndarray], target_img: np.ndarray, 
+                                         target_face_index: Optional[int] = None) -> Tuple[np.ndarray, bool]:
+        """
+        Swap faces using in-memory images without saving to disk.
+        
+        Args:
+            source_images: List of source face images as numpy arrays
+            target_img: Target image as numpy array
+            target_face_index: Index of face to swap in target (None for all faces)
+            
+        Returns:
+            Tuple of (result_image, success)
+        """
+        logger.info(f"Attempting in-memory face swap with {len(source_images)} source images")
+        
+        if not source_images:
+            logger.error("No source images provided")
+            return None, False
+            
+        try:
+            # Process the target image
+            target_faces = self.app.get(target_img)
+            
+            if not target_faces:
+                logger.error("No faces found in target image")
+                return None, False
+                
+            # Use first source image only (for now)
+            source_face = self.app.get(source_images[0])
+            
+            if not source_face:
+                logger.error("No face found in source image")
+                return None, False
+                
+            # Get primary source face
+            primary_source_face = source_face[0]
+            
+            if target_face_index is not None:
+                # Single face swap
+                if target_face_index < 0 or target_face_index >= len(target_faces):
+                    logger.error(f"Target face index {target_face_index} is out of range. Found {len(target_faces)} faces.")
+                    return None, False
+                    
+                target_face = target_faces[target_face_index]
+                result_img = self.swapper.get(target_img.copy(), target_face, primary_source_face, paste_back=True)
+                logger.info("Single face swap completed successfully")
+                return result_img, True
+            else:
+                # Swap all faces
+                result_img = target_img.copy()
+                for target_face in target_faces:
+                    result_img = self.swapper.get(result_img, target_face, primary_source_face, paste_back=True)
+                logger.info("All faces swap completed successfully")
+                return result_img, True
+                
+        except Exception as e:
+            logger.error(f"Error during in-memory face swap: {str(e)}")
+            return None, False
+
     def combine_source_faces(self, source_faces: List[Dict]) -> Dict:
         """
         Combine multiple source faces to create an enhanced face representation.

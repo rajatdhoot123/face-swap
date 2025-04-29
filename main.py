@@ -304,12 +304,24 @@ async def swap_faces_story(
         
         logger.info(f"Received story face swap request for story: {story_obj.title}")
         
-        # Download all swap face images
-        swap_paths = []
+        # Download all swap face images directly into memory
+        swap_faces = []
         for url in swap_faces_urls:
-            swap_path = download_image(url)
-            swap_paths.append(swap_path)
-            logger.info(f"Downloaded swap face image to: {swap_path}")
+            response = requests.get(url)
+            response.raise_for_status()
+            img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+            img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+            if img is None:
+                logger.error(f"Failed to decode image from URL: {url}")
+                continue
+            swap_faces.append(img)
+            logger.info(f"Downloaded swap face image from: {url}")
+        
+        if not swap_faces:
+            return JSONResponse(
+                status_code=422, 
+                content={"detail": "Failed to download any valid face images"}
+            )
         
         # Process each page image
         result_story = story_obj.dict()
@@ -321,41 +333,33 @@ async def swap_faces_story(
                 continue
                 
             try:
-                # Download the base image
-                base_path = download_image(str(page.imageUrl))
+                # Download the base image directly into memory
+                response = requests.get(str(page.imageUrl))
+                response.raise_for_status()
+                img_array = np.asarray(bytearray(response.content), dtype=np.uint8)
+                base_img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
                 
-                # Swap faces
-                result_img, success = face_swapper.swap_with_enhanced_face(
-                    swap_paths,
-                    base_path,
-                    target_face_index  # Use the target face index from the request
+                if base_img is None:
+                    logger.error(f"Failed to decode base image from URL: {page.imageUrl}")
+                    continue
+                
+                # Swap faces using in-memory images
+                result_img, success = face_swapper.swap_with_enhanced_face_in_memory(
+                    swap_faces,
+                    base_img,
+                    target_face_index
                 )
                 
                 if success:
-                    # Upload to R2 or save locally
-                    if face_swapper.r2_enabled:
-                        result_url = face_swapper.upload_image_to_r2(result_img, session_uuid, i)
-                        result_story["pages"][i]["imageUrl"] = result_url
-                        logger.info(f"Face swap successful for page {i}, uploaded to: {result_url}")
-                    else:
-                        # Fallback to local storage
-                        result_filename = f"story_faceswap_{session_uuid}_{i}.jpg"
-                        result_path = str(UPLOAD_DIR / result_filename)
-                        cv2.imwrite(result_path, result_img)
-                        result_story["pages"][i]["imageUrl"] = f"/result/{result_filename}"
-                        logger.info(f"Face swap successful for page {i}, saved as: {result_filename}")
+                    # Upload to R2
+                    result_url = face_swapper.upload_image_to_r2(result_img, session_uuid, i)
+                    result_story["pages"][i]["imageUrl"] = result_url
+                    logger.info(f"Face swap successful for page {i}, uploaded to: {result_url}")
                 else:
                     logger.warning(f"Face swap failed for page {i}")
             except Exception as e:
                 logger.error(f"Error processing page {i}: {str(e)}")
                 # Continue with other pages even if one fails
-        
-        # Clean up temporary files
-        for path in swap_paths:
-            try:
-                os.unlink(path)
-            except Exception as e:
-                logger.error(f"Error deleting temporary file {path}: {str(e)}")
         
         # Add the additional request fields to the response
         response = {
