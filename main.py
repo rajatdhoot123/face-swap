@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, File, UploadFile, Form, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ import base64
 import requests
 from auth import get_api_key
 from dotenv import load_dotenv
+import json
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +32,30 @@ class SwapFacesRequest(BaseModel):
     base_image_url: HttpUrl
     swap_faces_urls: List[HttpUrl]
     target_face_index: Optional[int] = None  # None means swap onto all faces
+
+class StoryPage(BaseModel):
+    pageNumber: int
+    text: str
+    imagePrompt: str
+    imageUrl: Optional[str] = None
+    status: Optional[str] = None
+    jobId: Optional[str] = None
+    jobStatus: Optional[str] = None
+    replicateJobId: Optional[str] = None
+    errorMessage: Optional[str] = None
+    metadata: Optional[dict] = None
+
+class Story(BaseModel):
+    title: str
+    description: str
+    pages: List[StoryPage]
+
+class StoryFaceSwapRequest(BaseModel):
+    name: str
+    gender: str
+    birthDate: str
+    story: Story
+    uploadPathPrefix: str
 
 class FaceInfo(BaseModel):
     index: int
@@ -223,6 +248,131 @@ async def enhanced_swap_faces(request: SwapFacesRequest, api_key: str = Depends(
     except Exception as e:
         logger.error(f"Error in enhanced face swap: {str(e)}")
         raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/swap-faces-story/")
+async def swap_faces_story(
+    request: Request,
+    api_key: Optional[str] = Depends(get_api_key)
+):
+    """
+    Perform face swapping on all images in a story.
+    Takes a story with image URLs and swaps faces using either uploaded photos or image URLs.
+    """
+    try:
+        # Parse the request body
+        body = await request.json()
+        
+        # Extract data from the JSON payload
+        name = body.get('name')
+        gender = body.get('gender')
+        birth_date = body.get('birth_date')  # Note: changed from birthDate
+        story_data = body.get('story')
+        swap_faces_urls = body.get('swap_faces_urls', [])
+        target_face_index = body.get('target_face_index')
+        
+        # Log request data for debugging
+        logger.info(f"Received request with: name={name}, gender={gender}")
+        logger.info(f"birth_date={birth_date}")
+        logger.info(f"Swap faces URLs count: {len(swap_faces_urls)}")
+        logger.info(f"Story data (truncated): {str(story_data)[:200]}...")
+        
+        # Parse the story JSON string or dict into our model
+        try:
+            if isinstance(story_data, str):
+                story_obj = Story(**json.loads(story_data))
+            else:
+                story_obj = Story(**story_data)
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in story field: {e}")
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"Invalid JSON in story field: {str(e)}"}
+            )
+        except Exception as e:
+            logger.error(f"Error parsing story data: {e}")
+            return JSONResponse(
+                status_code=422,
+                content={"detail": f"Error parsing story data: {str(e)}"}
+            )
+        
+        # Validate swap_faces_urls
+        if len(swap_faces_urls) == 0:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "No face images provided"}
+            )
+        
+        logger.info(f"Received story face swap request for story: {story_obj.title}")
+        
+        # Download all swap face images
+        swap_paths = []
+        for url in swap_faces_urls:
+            swap_path = download_image(url)
+            swap_paths.append(swap_path)
+            logger.info(f"Downloaded swap face image to: {swap_path}")
+        
+        # Process each page image
+        result_story = story_obj.dict()
+        session_uuid = str(uuid.uuid4())
+        
+        for i, page in enumerate(story_obj.pages):
+            if not page.imageUrl:
+                logger.warning(f"No image URL for page {i}, skipping")
+                continue
+                
+            try:
+                # Download the base image
+                base_path = download_image(str(page.imageUrl))
+                
+                # Swap faces
+                result_img, success = face_swapper.swap_with_enhanced_face(
+                    swap_paths,
+                    base_path,
+                    target_face_index  # Use the target face index from the request
+                )
+                
+                if success:
+                    # Upload to R2 or save locally
+                    if face_swapper.r2_enabled:
+                        result_url = face_swapper.upload_image_to_r2(result_img, session_uuid, i)
+                        result_story["pages"][i]["imageUrl"] = result_url
+                        logger.info(f"Face swap successful for page {i}, uploaded to: {result_url}")
+                    else:
+                        # Fallback to local storage
+                        result_filename = f"story_faceswap_{session_uuid}_{i}.jpg"
+                        result_path = str(UPLOAD_DIR / result_filename)
+                        cv2.imwrite(result_path, result_img)
+                        result_story["pages"][i]["imageUrl"] = f"/result/{result_filename}"
+                        logger.info(f"Face swap successful for page {i}, saved as: {result_filename}")
+                else:
+                    logger.warning(f"Face swap failed for page {i}")
+            except Exception as e:
+                logger.error(f"Error processing page {i}: {str(e)}")
+                # Continue with other pages even if one fails
+        
+        # Clean up temporary files
+        for path in swap_paths:
+            try:
+                os.unlink(path)
+            except Exception as e:
+                logger.error(f"Error deleting temporary file {path}: {str(e)}")
+        
+        # Add the additional request fields to the response
+        response = {
+            "name": name,
+            "gender": gender,
+            "birthDate": birth_date,
+            "story": result_story
+        }
+        
+        return response
+    except Exception as e:
+        logger.error(f"Error in story face swap: {str(e)}")
+        # Return more detailed error info
+        return JSONResponse(
+            status_code=400,
+            content={"detail": str(e), "type": str(type(e))}
+        )
 
 @app.get("/result/{filename}")
 async def get_result(filename: str, api_key: str = Depends(get_api_key)):
