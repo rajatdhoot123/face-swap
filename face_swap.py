@@ -22,12 +22,13 @@ class FaceSwapper:
         self.app = FaceAnalysis(name='buffalo_l')
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         # Get the face swapper
-        model_path = Path(__file__).parent / "inswapper_128.onnx"
-        if not model_path.exists():
-            raise FileNotFoundError(
-                "Please download the inswapper_128.onnx model from InsightFace and place it in the project directory"
-            )
-        self.swapper = insightface.model_zoo.get_model(str(model_path))
+        try:
+            # Automatically download the model if not available
+            self.swapper = insightface.model_zoo.get_model('inswapper_512', download=True)
+            logger.info("Face swap model loaded successfully")
+        except Exception as e:
+            logger.error(f"Error loading face swap model: {str(e)}")
+            raise
         
         # Configure R2 client
         self.r2_enabled = all([
